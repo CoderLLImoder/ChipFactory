@@ -25,52 +25,76 @@ public struct Chip {
 }
 
 
-struct Stack {
-    private var items: [Chip] = []
+class Stack {
+    private var items = [Chip]()
+    private let queue = DispatchQueue(label: "Queue", attributes: .concurrent)
     
-    mutating func pop() -> Chip {
-        return items.removeFirst()
+    public lazy var hasValues = {
+        return self.items.count > 0
     }
     
-    mutating func push(_ element: Chip) {
-        items.insert(element, at: 0)
+    func pop() -> Chip {
+        var removedItem = Chip(chipType: .small)
+        queue.sync{
+            removedItem = self.items.removeFirst()
+        }
+        return removedItem
+    }
+    
+    func push(_ element: Chip) {
+        queue.async(flags: .barrier) {
+            self.items.insert(element, at: 0)
+        }
     }
 }
 
-var nsCondition = NSCondition()
-var isStackAvaliable = false
+
 var stack = Stack()
+var isGeneratorActive = false
 
 class Generator: Thread {
+
     override func main() {
-        nsCondition.lock()
-        for _ in 0...10 {
+        isGeneratorActive = true
+        for _ in 1...10 {
             stack.push(Chip.make())
-            wait(w_status: 2)
+            Generator.sleep(forTimeInterval: 2)
         }
-        isStackAvaliable = true
-        nsCondition.signal()
-        nsCondition.unlock()
+        isGeneratorActive = false
     }
 }
 
 class Executor: Thread {
     override func main() {
-        for _ in 0...10 {
-            nsCondition.lock()
-            while !isStackAvaliable {
-                nsCondition.wait()
+        while isGeneratorActive || stack.hasValues() {
+            if stack.hasValues() {
+                var chip = stack.pop()
+                chip.sodering()
             }
-            var chip = stack.pop()
-            chip.sodering()
-            isStackAvaliable = true
-            nsCondition.unlock()
         }
     }
 }
 
-var gen = Generator()
-var exe = Executor()
+final class StackManager {
+    private let queue = DispatchQueue(label: "AppenderQueue", attributes: .concurrent)
+    let semaphore = DispatchSemaphore(value: 2)
+    var exe = Executor()
+    var gen = Generator()
+    
+    func workWithStack() {
+        queue.async { [self] in
+            semaphore.wait()
+            gen.main()
+            semaphore.signal()
+        }
+        
+        queue.async { [self] in
+            semaphore.wait()
+            exe.main()
+            semaphore.signal()
+        }
+    }
+}
 
-gen.main()
-exe.main()
+var manager = StackManager()
+manager.workWithStack()
